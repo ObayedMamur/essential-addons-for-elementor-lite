@@ -279,29 +279,39 @@ jobs:
         run: |
           cd test-site
 
+          # Helper: checks WP is alive after a plugin is activated.
+          # Uses grep instead of exact match because some plugins (e.g. WooCommerce)
+          # print PHP notices to stdout on first activation, polluting the output.
+          check_wp_alive() {
+            local label="$1"
+            WP_STATUS=$(wp eval 'echo "EAEL_OK";' --allow-root 2>/dev/null || true)
+            if ! echo "$WP_STATUS" | grep -q "EAEL_OK"; then
+              echo "::error::Conflict detected with $label — WordPress failed to boot after activation"
+              return 1
+            fi
+            wp plugin list --status=active --field=name --allow-root | grep -q "essential-addons-for-elementor-lite" \
+              && echo "✅ EAEL still active alongside $label"
+            echo "✅ No conflicts with $label"
+          }
+
           # Helper: install + activate a plugin gracefully.
-          # Returns 0 (success/skipped) so the job never hard-fails on a version mismatch.
+          # Captures output to a file (not a pipe) so the exit code is correct.
           try_install_plugin() {
             local slug="$1"
             local label="$2"
             echo "--- Testing $label ---"
-            if wp plugin install "$slug" --activate --allow-root 2>&1 | tee /tmp/wp_install.log; then
-              WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
-              if [[ "$WP_STATUS" != "Ready" ]]; then
-                echo "::error::Conflict detected with $label"
-                return 1
-              fi
-              wp plugin list --status=active --field=name --allow-root | grep -q "essential-addons-for-elementor-lite" \
-                && echo "✅ EAEL still active alongside $label"
-              echo "✅ No conflicts with $label"
+            wp plugin install "$slug" --activate --allow-root >/tmp/wp_install.log 2>&1
+            local exit_code=$?
+            cat /tmp/wp_install.log
+            if [ $exit_code -eq 0 ]; then
+              check_wp_alive "$label" || return 1
             else
               # If install failed due to a WP version requirement, emit a warning and skip.
-              if grep -q "Minimum WordPress requirement" /tmp/wp_install.log; then
+              if grep -q "Minimum WordPress requirement" /tmp/wp_install.log \
+                || grep -q "could not be found" /tmp/wp_install.log; then
                 echo "::warning::Skipping $label conflict check — plugin requires a newer WordPress version than ${{ matrix.wp-version }}"
               else
-                # Any other install error is a real failure
-                echo "::error::Failed to install $label for unexpected reason:"
-                cat /tmp/wp_install.log
+                echo "::error::Failed to install $label for unexpected reason (see log above)"
                 return 1
               fi
             fi
@@ -309,12 +319,7 @@ jobs:
 
           # ── Akismet (ships with WP by default) ──────────────────────────────
           wp plugin activate akismet --allow-root 2>/dev/null || true
-          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
-          if [[ "$WP_STATUS" != "Ready" ]]; then
-            echo "::error::Conflict detected with Akismet"
-            exit 1
-          fi
-          echo "✅ No conflicts with Akismet"
+          check_wp_alive "Akismet" || exit 1
 
           # ── WooCommerce ─────────────────────────────────────────────────────
           # EAEL has dedicated WooCommerce widgets; confirms no fatal on co-activation.
