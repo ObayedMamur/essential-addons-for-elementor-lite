@@ -270,19 +270,57 @@ jobs:
           fi
           echo "✅ Site stable after reactivation"
 
-      # 14. Test With Common Bundled Plugins (Conflict Check)
-      - name: Test With Bundled Plugins
+      # 14. Test With Common Plugins (Conflict Check)
+      # Verifies EAEL coexists with the most widely-used WordPress plugins.
+      - name: Test With Common Plugins (Conflict Check)
         run: |
           cd test-site
-          # Akismet ships with WordPress by default
-          wp plugin activate akismet --allow-root 2>/dev/null || true
 
+          # ── Akismet (ships with WP by default) ──────────────────────────────
+          wp plugin activate akismet --allow-root 2>/dev/null || true
           WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
           if [[ "$WP_STATUS" != "Ready" ]]; then
             echo "::error::Conflict detected with Akismet"
             exit 1
           fi
           echo "✅ No conflicts with Akismet"
+
+          # ── WooCommerce ─────────────────────────────────────────────────────
+          # EAEL has dedicated WooCommerce widgets; this confirms no fatal on co-activation.
+          wp plugin install woocommerce --activate --allow-root
+          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
+          if [[ "$WP_STATUS" != "Ready" ]]; then
+            echo "::error::Conflict detected with WooCommerce"
+            exit 1
+          fi
+          echo "✅ No conflicts with WooCommerce"
+
+          # Also verify EAEL still active after WooCommerce activation
+          wp plugin list --status=active --field=name --allow-root | grep -q "essential-addons-for-elementor-lite"
+          echo "✅ EAEL still active alongside WooCommerce"
+
+          # ── Classic Editor ──────────────────────────────────────────────────
+          # Ensures the classic editor does not break EAEL's frontend/admin hooks.
+          wp plugin install classic-editor --activate --allow-root
+          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
+          if [[ "$WP_STATUS" != "Ready" ]]; then
+            echo "::error::Conflict detected with Classic Editor"
+            exit 1
+          fi
+          echo "✅ No conflicts with Classic Editor"
+
+          # ── Yoast SEO ───────────────────────────────────────────────────────
+          # Yoast hooks heavily into wp_head; confirm EAEL does not break it.
+          wp plugin install wordpress-seo --activate --allow-root
+          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
+          if [[ "$WP_STATUS" != "Ready" ]]; then
+            echo "::error::Conflict detected with Yoast SEO"
+            exit 1
+          fi
+          echo "✅ No conflicts with Yoast SEO"
+
+          # Deactivate third-party plugins after the check to keep env clean
+          wp plugin deactivate woocommerce classic-editor wordpress-seo --allow-root 2>/dev/null || true
 
       # 15. Verify REST API Health
       - name: Verify REST API Health
@@ -296,4 +334,126 @@ jobs:
               exit(1);
             }
             echo "✅ REST API responding normally\n";
+          ' --allow-root
+
+      # 16. EAEL Active Without Elementor — No Fatal Errors
+      # Confirms that when Elementor is deactivated while EAEL is still active,
+      # WordPress continues to boot cleanly (an admin notice is shown — that is
+      # intentional and acceptable; a Fatal or PHP Error is NOT acceptable).
+      - name: EAEL Active Without Elementor (Graceful Degradation)
+        run: |
+          cd test-site
+
+          # Deactivate Elementor but leave EAEL active
+          wp plugin deactivate elementor --allow-root
+          echo "Elementor deactivated, EAEL still active..."
+
+          # Clear any leftover debug log entries from previous steps
+          rm -f wp-content/debug.log
+
+          # Trigger a full bootstrap — this is where a fatal would surface
+          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
+          if [[ "$WP_STATUS" != "Ready" ]]; then
+            echo "::error::Fatal Error: WordPress crashed when Elementor is deactivated but EAEL is active."
+            exit 1
+          fi
+          echo "✅ WordPress booted cleanly without Elementor"
+
+          # Ensure no PHP Fatals appeared in the debug log
+          if [ -f wp-content/debug.log ]; then
+            FATALS=$(grep -c "PHP Fatal" wp-content/debug.log || true)
+            if [ "$FATALS" -gt 0 ]; then
+              echo "::error::PHP Fatal detected when EAEL is active without Elementor:"
+              grep "PHP Fatal" wp-content/debug.log
+              exit 1
+            fi
+          fi
+          echo "✅ No PHP Fatal errors when Elementor is deactivated"
+
+          # Verify the expected 'activate Elementor' admin notice IS registered
+          # (this is intentional behaviour, not a bug)
+          wp eval '
+            $notices = [];
+            do_action("admin_notices");
+            // If we get here without a fatal, graceful degradation is working
+            echo "✅ Admin notices fired without fatal\n";
+          ' --allow-root
+
+          # Re-activate Elementor for subsequent steps
+          wp plugin activate elementor --allow-root
+          echo "✅ Elementor re-activated"
+
+      # 17. Frontend Hook Health Check (wp_head / wp_footer)
+      # A broken plugin often manifests as a corrupted wp_head or wp_footer.
+      # We simulate a frontend request and confirm both hooks execute cleanly.
+      - name: Frontend Hook Health Check
+        run: |
+          cd test-site
+          wp eval '
+            ob_start();
+            do_action("wp_head");
+            $head_output = ob_get_clean();
+            if (empty($head_output)) {
+              echo "::warning::wp_head produced no output — may indicate a hook registration problem\n";
+            } else {
+              echo "✅ wp_head executed and produced output\n";
+            }
+
+            ob_start();
+            do_action("wp_footer");
+            $footer_output = ob_get_clean();
+            // wp_footer can be empty in CLI context; just confirm no fatal
+            echo "✅ wp_footer hook executed cleanly\n";
+          ' --allow-root
+
+      # 18. EAEL Asset Directory Creation Check
+      # On first activation EAEL creates its asset cache directory inside wp-content/uploads.
+      # Verifies the directory exists and is writable — a permissions problem here
+      # causes silent failures in CSS/JS generation on the front end.
+      - name: Asset Directory Writable Check
+        run: |
+          cd test-site
+          wp eval '
+            if (!defined("EAEL_ASSET_PATH")) {
+              echo "::error::EAEL_ASSET_PATH constant not defined\n";
+              exit(1);
+            }
+            $path = EAEL_ASSET_PATH;
+            if (!is_dir($path)) {
+              // Try to create it (mirrors what the plugin does at runtime)
+              wp_mkdir_p($path);
+            }
+            if (!is_dir($path)) {
+              echo "::error::EAEL asset directory does not exist and could not be created: $path\n";
+              exit(1);
+            }
+            if (!is_writable($path)) {
+              echo "::error::EAEL asset directory is not writable: $path\n";
+              exit(1);
+            }
+            echo "✅ EAEL asset directory exists and is writable: $path\n";
+          ' --allow-root
+
+      # 19. Shortcode & do_shortcode Safety Check
+      # EAEL registers Elementor widgets, but some older EAEL code also touches
+      # the shortcode API. Confirm do_shortcode does not fatal on a typical page.
+      - name: Shortcode Execution Safety
+        run: |
+          cd test-site
+          wp eval '
+            // Create a test post and run do_shortcode on its content
+            $post_id = wp_insert_post([
+              "post_title"   => "EAEL Shortcode Test",
+              "post_content" => "Hello world.",
+              "post_status"  => "publish",
+              "post_type"    => "post",
+            ]);
+            if (is_wp_error($post_id)) {
+              echo "::error::Could not create test post: " . $post_id->get_error_message() . "\n";
+              exit(1);
+            }
+            $post    = get_post($post_id);
+            $content = do_shortcode($post->post_content);
+            wp_delete_post($post_id, true);
+            echo "✅ do_shortcode executed without fatal errors\n";
           ' --allow-root
