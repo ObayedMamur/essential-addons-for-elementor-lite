@@ -24,7 +24,8 @@ jobs:
       matrix:
         # We use an 'include' strategy to match your specific requirements
         include:
-          # Requirement 1: WP 6.9.4 across all modern PHP versions
+          # ── WP / PHP Compatibility Matrix ────────────────────────────────────
+          # Requirement 1: WP 6.9.4 across all modern PHP versions (latest Elementor)
           # Elementor latest (>=3.25) requires WP 6.6+, so no version pin needed here.
           - wp-version: "6.9.4"
             php-version: "7.4"
@@ -51,7 +52,24 @@ jobs:
             php-version: "7.4"
             elementor-version: "3.7.8"
 
-    name: WP ${{ matrix.wp-version }} / PHP ${{ matrix.php-version }}
+          # ── Elementor Backward Compatibility Matrix ───────────────────────────
+          # Fixed on WP 6.9.4 / PHP 8.1 — only the Elementor major version changes.
+          # Ensures EAEL remains functional across the major Elementor release lines.
+          - wp-version: "6.9.4"
+            php-version: "8.1"
+            elementor-version: "3.35.0"   # Latest major – EAEL tested up to 3.35
+          - wp-version: "6.9.4"
+            php-version: "8.1"
+            elementor-version: "3.30.0"   # Elementor 3.30 series
+          - wp-version: "6.9.4"
+            php-version: "8.1"
+            elementor-version: "3.25.0"   # First release requiring WP 6.6+
+          - wp-version: "6.9.4"
+            php-version: "8.1"
+            elementor-version: "3.21.0"   # Pre-WP-6.6-requirement era
+
+    name: "WP ${{ matrix.wp-version }} / PHP ${{ matrix.php-version }} / Elementor ${{ matrix.elementor-version }}"
+
 
     steps:
       # 1. Pull the plugin code from the repository
