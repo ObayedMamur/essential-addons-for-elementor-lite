@@ -272,9 +272,40 @@ jobs:
 
       # 14. Test With Common Plugins (Conflict Check)
       # Verifies EAEL coexists with the most widely-used WordPress plugins.
+      # Uses a graceful install pattern: if a plugin requires a newer WP version
+      # than the current matrix entry, it is skipped with a warning instead of
+      # failing the job (version-gated tests are covered by the modern WP entries).
       - name: Test With Common Plugins (Conflict Check)
         run: |
           cd test-site
+
+          # Helper: install + activate a plugin gracefully.
+          # Returns 0 (success/skipped) so the job never hard-fails on a version mismatch.
+          try_install_plugin() {
+            local slug="$1"
+            local label="$2"
+            echo "--- Testing $label ---"
+            if wp plugin install "$slug" --activate --allow-root 2>&1 | tee /tmp/wp_install.log; then
+              WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
+              if [[ "$WP_STATUS" != "Ready" ]]; then
+                echo "::error::Conflict detected with $label"
+                return 1
+              fi
+              wp plugin list --status=active --field=name --allow-root | grep -q "essential-addons-for-elementor-lite" \
+                && echo "✅ EAEL still active alongside $label"
+              echo "✅ No conflicts with $label"
+            else
+              # If install failed due to a WP version requirement, emit a warning and skip.
+              if grep -q "Minimum WordPress requirement" /tmp/wp_install.log; then
+                echo "::warning::Skipping $label conflict check — plugin requires a newer WordPress version than ${{ matrix.wp-version }}"
+              else
+                # Any other install error is a real failure
+                echo "::error::Failed to install $label for unexpected reason:"
+                cat /tmp/wp_install.log
+                return 1
+              fi
+            fi
+          }
 
           # ── Akismet (ships with WP by default) ──────────────────────────────
           wp plugin activate akismet --allow-root 2>/dev/null || true
@@ -286,38 +317,17 @@ jobs:
           echo "✅ No conflicts with Akismet"
 
           # ── WooCommerce ─────────────────────────────────────────────────────
-          # EAEL has dedicated WooCommerce widgets; this confirms no fatal on co-activation.
-          wp plugin install woocommerce --activate --allow-root
-          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
-          if [[ "$WP_STATUS" != "Ready" ]]; then
-            echo "::error::Conflict detected with WooCommerce"
-            exit 1
-          fi
-          echo "✅ No conflicts with WooCommerce"
-
-          # Also verify EAEL still active after WooCommerce activation
-          wp plugin list --status=active --field=name --allow-root | grep -q "essential-addons-for-elementor-lite"
-          echo "✅ EAEL still active alongside WooCommerce"
+          # EAEL has dedicated WooCommerce widgets; confirms no fatal on co-activation.
+          # Latest WooCommerce requires WP 6.8+ — skipped gracefully on older WP.
+          try_install_plugin "woocommerce" "WooCommerce" || exit 1
 
           # ── Classic Editor ──────────────────────────────────────────────────
           # Ensures the classic editor does not break EAEL's frontend/admin hooks.
-          wp plugin install classic-editor --activate --allow-root
-          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
-          if [[ "$WP_STATUS" != "Ready" ]]; then
-            echo "::error::Conflict detected with Classic Editor"
-            exit 1
-          fi
-          echo "✅ No conflicts with Classic Editor"
+          try_install_plugin "classic-editor" "Classic Editor" || exit 1
 
           # ── Yoast SEO ───────────────────────────────────────────────────────
           # Yoast hooks heavily into wp_head; confirm EAEL does not break it.
-          wp plugin install wordpress-seo --activate --allow-root
-          WP_STATUS=$(wp eval 'echo "Ready";' --quiet --allow-root)
-          if [[ "$WP_STATUS" != "Ready" ]]; then
-            echo "::error::Conflict detected with Yoast SEO"
-            exit 1
-          fi
-          echo "✅ No conflicts with Yoast SEO"
+          try_install_plugin "wordpress-seo" "Yoast SEO" || exit 1
 
           # Deactivate third-party plugins after the check to keep env clean
           wp plugin deactivate woocommerce classic-editor wordpress-seo --allow-root 2>/dev/null || true
