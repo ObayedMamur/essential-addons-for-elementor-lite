@@ -1,7 +1,7 @@
 # Workflow Name: EAEL Compatibility Testing
 # This workflow ensures the plugin installs and activates without fatal errors
 # across specific legacy and modern WordPress/PHP environments.
-name: EAEL CI
+name: EAEL Compatibility Testing
 
 on:
   workflow_dispatch:
@@ -159,15 +159,20 @@ jobs:
           echo "✅ All PHP files pass syntax check"
 
       # 11. Verify Admin Menu Registration
-      # EAEL registers its admin menu via the Admin trait inside Bootstrap::instance(),
-      # which runs on plugins_loaded. In WP-CLI context is_admin()=false so we need
-      # to manually trigger admin_menu action after including admin helpers.
+      # In WP-CLI context is_admin()=false, so Bootstrap::register_hooks() never
+      # calls add_action('admin_menu', ...). We bypass this by calling the
+      # admin_menu() method directly on the already-initialized Bootstrap singleton.
       - name: Verify Admin Menu Registration
         run: |
           cd test-site
           wp eval '
             require_once ABSPATH . "wp-admin/includes/admin.php";
-            do_action("admin_menu");
+
+            // Bootstrap is already initialized via plugins_loaded.
+            // Directly invoke admin_menu() to register the WP menu entries.
+            $instance = \Essential_Addons_Elementor\Classes\Bootstrap::instance();
+            $instance->admin_menu();
+
             global $menu;
             $found = false;
             if (is_array($menu)) {
