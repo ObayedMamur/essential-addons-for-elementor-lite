@@ -4,12 +4,10 @@
 name: EAEL Compatibility Testing
 
 on:
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch to run the compatibility test on"
-        required: true
-        default: "master"
+  push:
+    branches:
+      - master
+      - dev
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # ← opt into Node 24 now, ahead of June 2026 deadline
@@ -36,6 +34,7 @@ jobs:
           - wp-version: "6.9.4"
             php-version: "8.2"
             elementor-version: "latest"
+            conflict-check: true
           - wp-version: "6.9.4"
             php-version: "8.4"
             elementor-version: "latest"
@@ -272,10 +271,10 @@ jobs:
 
       # 14. Test With Common Plugins (Conflict Check)
       # Verifies EAEL coexists with the most widely-used WordPress plugins.
-      # Uses a graceful install pattern: if a plugin requires a newer WP version
-      # than the current matrix entry, it is skipped with a warning instead of
-      # failing the job (version-gated tests are covered by the modern WP entries).
+      # Only runs on one representative modern environment (WP 6.9.4 / PHP 8.2 / Elementor latest)
+      # to avoid exhausting CI minutes across all matrix entries.
       - name: Test With Common Plugins (Conflict Check)
+        if: matrix.conflict-check
         run: |
           cd test-site
 
